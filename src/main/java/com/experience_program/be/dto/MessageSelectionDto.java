@@ -3,10 +3,11 @@ package com.experience_program.be.dto;
 import lombok.Getter;
 import lombok.Setter;
 
+import java.util.List;
 import java.util.UUID;
 
 @Getter
 @Setter
 public class MessageSelectionDto {
-    private UUID resultId;
+    private List<UUID> resultIds;
 }

@@ -17,7 +17,9 @@ import reactor.core.publisher.Mono;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -92,31 +94,71 @@ public class CampaignService {
     }
 
     @Transactional
-    public void selectMessage(UUID campaignId, UUID resultId) {
-        MessageResult result = messageResultRepository.findById(resultId)
-                .orElseThrow(() -> new ResourceNotFoundException("ID " + resultId + "에 해당하는 메시지를 찾을 수 없습니다."));
+    public void selectMessage(UUID campaignId, List<UUID> resultIds) {
+        // 1. Verify campaign exists
+        Campaign campaign = getCampaignById(campaignId);
 
-        // Ensure the message belongs to the campaign
-        if (!result.getCampaign().getCampaignId().equals(campaignId)) {
-            throw new IllegalArgumentException("메시지가 현재 캠페인에 속해있지 않습니다.");
+        // 2. Reset all messages for this campaign to isSelected = false
+        List<MessageResult> allResults = messageResultRepository.findByCampaign_CampaignId(campaignId);
+        allResults.forEach(result -> result.setSelected(false));
+
+        // 3. Set isSelected = true for the provided resultIds
+        List<MessageResult> selectedResults = messageResultRepository.findAllById(resultIds);
+        for (MessageResult result : selectedResults) {
+            if (!result.getCampaign().getCampaignId().equals(campaignId)) {
+                throw new IllegalArgumentException("선택된 메시지(ID: " + result.getResultId() + ")가 현재 캠페인에 속해있지 않습니다.");
+            }
+            result.setSelected(true);
         }
+        
+        messageResultRepository.saveAll(allResults);
+        messageResultRepository.saveAll(selectedResults);
 
-        result.setSelected(true);
-        messageResultRepository.save(result);
+        // 4. Update campaign status
         updateCampaignStatus(campaignId, "MESSAGE_SELECTED");
     }
 
     @Transactional
     public void refineMessage(UUID campaignId, String feedback) {
-        Campaign campaign = getCampaignById(campaignId); // Re-use getCampaignById for existence check
+        Campaign campaign = getCampaignById(campaignId);
         updateCampaignStatus(campaignId, "REFINING");
 
+        // 1. Reconstruct campaign_context
+        CampaignRequestDto campaignContext = new CampaignRequestDto();
+        campaignContext.setMarketerId(campaign.getMarketerId());
+        campaignContext.setPurpose(campaign.getPurpose());
+        campaignContext.setCoreBenefitText(campaign.getCoreBenefitText());
+        campaignContext.setSourceUrl(campaign.getSourceUrl());
+        campaignContext.setCustomColumns(campaign.getCustomColumns());
+
+        // 2. Reconstruct target_personas from previous results
+        List<MessageResult> previousResults = messageResultRepository.findByCampaign_CampaignId(campaignId);
+        List<Map<String, Object>> targetPersonas = previousResults.stream()
+                .map(result -> {
+                    Map<String, Object> persona = new HashMap<>();
+                    persona.put("target_group_index", result.getTargetGroupIndex());
+                    persona.put("target_name", result.getTargetName());
+                    persona.put("target_features", result.getTargetFeatures());
+                    return persona;
+                })
+                .distinct() // 중복된 페르소나 정보 제거
+                .collect(Collectors.toList());
+
+        // 3. Assemble the final request body for AI server
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("campaign_context", campaignContext);
+        requestBody.put("feedback_text", feedback);
+        requestBody.put("target_personas", targetPersonas); // 페르소나 정보 추가
+
         webClient.post()
-                .uri("/api/refine")
-                .body(Mono.just(new RefineRequestDto(feedback)), RefineRequestDto.class)
+                .uri("/api/campaigns/" + campaignId + "/refine")
+                .body(Mono.just(requestBody), Map.class)
                 .retrieve()
                 .bodyToMono(AiResponseDto.class)
-                .doOnError(error -> updateCampaignStatus(campaign.getCampaignId(), "FAILED"))
+                .doOnError(error -> {
+                    System.err.println("Error during refine call: " + error.getMessage());
+                    updateCampaignStatus(campaign.getCampaignId(), "FAILED");
+                })
                 .subscribe(aiResponse -> {
                     List<MessageResult> oldResults = messageResultRepository.findByCampaign_CampaignId(campaignId);
                     messageResultRepository.deleteAll(oldResults);
@@ -135,7 +177,7 @@ public class CampaignService {
 
     @Transactional
     public void updatePerformance(UUID campaignId, CampaignPerformanceUpdateDto performanceDto) {
-        Campaign campaign = getCampaignById(campaignId); // Re-use getCampaignById for existence check
+        Campaign campaign = getCampaignById(campaignId);
         campaign.setActualCtr(performanceDto.getActualCtr());
         campaign.setConversionRate(performanceDto.getConversionRate());
         campaign.setSuccessCase(performanceDto.getIsSuccessCase());
@@ -144,19 +186,22 @@ public class CampaignService {
 
     @Transactional
     public void triggerRagRegistration(UUID campaignId) {
-        Campaign campaign = getCampaignById(campaignId); // Re-use getCampaignById for existence check
+        Campaign campaign = getCampaignById(campaignId);
         if (campaign.isSuccessCase()) {
-            MessageResult selectedMessage = messageResultRepository.findByCampaign_CampaignIdAndIsSelected(campaign.getCampaignId(), true)
-                    .stream()
-                    .findFirst()
-                    .orElseThrow(() -> new IllegalStateException("성공 사례로 등록할 최종 선택된 메시지가 없습니다."));
+            List<MessageResult> selectedMessages = messageResultRepository.findByCampaign_CampaignIdAndIsSelected(campaign.getCampaignId(), true);
+            if (selectedMessages.isEmpty()) {
+                throw new IllegalStateException("성공 사례로 등록할 최종 선택된 메시지가 없습니다.");
+            }
+            
+            // For simplicity, we'll use the first selected message for the RAG entry.
+            MessageResult firstSelectedMessage = selectedMessages.get(0);
 
             String title = "성공사례: " + campaign.getPurpose();
             String content = String.format(
                     "캠페인 목적: %s\n핵심 혜택: %s\n성공 메시지: %s",
                     campaign.getPurpose(),
                     campaign.getCoreBenefitText(),
-                    selectedMessage.getMessageText()
+                    firstSelectedMessage.getMessageText()
             );
             SuccessCaseDto successCaseDto = new SuccessCaseDto(
                     title,

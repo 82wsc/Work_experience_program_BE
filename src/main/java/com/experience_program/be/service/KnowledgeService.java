@@ -1,69 +1,64 @@
 package com.experience_program.be.service;
 
 import com.experience_program.be.dto.KnowledgeDto;
-import com.experience_program.be.entity.KnowledgeBase;
-import com.experience_program.be.repository.KnowledgeBaseRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
-import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 
 @Service
 public class KnowledgeService {
 
-    private final KnowledgeBaseRepository knowledgeBaseRepository;
+    private final WebClient webClient;
 
     @Autowired
-    public KnowledgeService(KnowledgeBaseRepository knowledgeBaseRepository) {
-        this.knowledgeBaseRepository = knowledgeBaseRepository;
+    public KnowledgeService(WebClient webClient) {
+        this.webClient = webClient;
     }
 
-    @Transactional
-    public KnowledgeBase createKnowledge(KnowledgeDto knowledgeDto) {
-        KnowledgeBase knowledgeBase = KnowledgeBase.builder()
-                .title(knowledgeDto.getTitle())
-                .contentText(knowledgeDto.getContent_text())
-                .sourceType(knowledgeDto.getSource_type())
-                .uploadDate(LocalDateTime.now())
-                .isActive(knowledgeDto.getIs_active() != null ? knowledgeDto.getIs_active() : true)
-                .build();
-        // In a real scenario, this would also trigger vectorization and storage in a vector DB.
-        return knowledgeBaseRepository.save(knowledgeBase);
+    // 지식 생성 (AI 서버에 요청)
+    public Mono<Object> createKnowledge(KnowledgeDto knowledgeDto) {
+        return webClient.post()
+                .uri("/api/knowledge")
+                .body(Mono.just(knowledgeDto), KnowledgeDto.class)
+                .retrieve()
+                .bodyToMono(Object.class);
     }
 
-    public List<KnowledgeBase> findAllKnowledge() {
-        return knowledgeBaseRepository.findAll();
+    // 모든 지식 조회 (AI 서버에서 조회)
+    public Flux<Object> findAllKnowledge() {
+        return webClient.get()
+                .uri("/api/knowledge")
+                .retrieve()
+                .bodyToFlux(Object.class);
     }
 
-    public Optional<KnowledgeBase> findKnowledgeById(UUID knowledgeId) {
-        return knowledgeBaseRepository.findById(knowledgeId);
+    // 특정 지식 조회 (AI 서버에서 조회)
+    public Mono<Object> findKnowledgeById(String knowledgeId) {
+        return webClient.get()
+                .uri("/api/knowledge/" + knowledgeId)
+                .retrieve()
+                .bodyToMono(Object.class);
     }
 
-    @Transactional
-    public Optional<KnowledgeBase> updateKnowledge(UUID knowledgeId, KnowledgeDto knowledgeDto) {
-        return knowledgeBaseRepository.findById(knowledgeId)
-                .map(existingKnowledge -> {
-                    existingKnowledge.setTitle(knowledgeDto.getTitle());
-                    existingKnowledge.setContentText(knowledgeDto.getContent_text());
-                    existingKnowledge.setSourceType(knowledgeDto.getSource_type());
-                    if (knowledgeDto.getIs_active() != null) {
-                        existingKnowledge.setActive(knowledgeDto.getIs_active());
-                    }
-                    // Re-vectorization might be needed here.
-                    return knowledgeBaseRepository.save(existingKnowledge);
-                });
+    // 지식 수정 (AI 서버에 요청)
+    public Mono<Object> updateKnowledge(String knowledgeId, KnowledgeDto knowledgeDto) {
+        return webClient.put()
+                .uri("/api/knowledge/" + knowledgeId)
+                .body(Mono.just(knowledgeDto), KnowledgeDto.class)
+                .retrieve()
+                .bodyToMono(Object.class);
     }
 
-    @Transactional
-    public boolean deleteKnowledge(UUID knowledgeId) {
-        if (knowledgeBaseRepository.existsById(knowledgeId)) {
-            knowledgeBaseRepository.deleteById(knowledgeId);
-            return true;
-        }
-        return false;
+    // 지식 삭제 (AI 서버에 요청)
+    public Mono<Void> deleteKnowledge(String knowledgeId) {
+        return webClient.delete()
+                .uri("/api/knowledge/" + knowledgeId)
+                .retrieve()
+                .bodyToMono(Void.class);
     }
 }

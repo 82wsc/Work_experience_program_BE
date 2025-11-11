@@ -1,5 +1,6 @@
 package com.experience_program.be.entity;
 
+import com.fasterxml.jackson.annotation.JsonBackReference;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -21,6 +22,7 @@ public class MessageResult {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "campaign_id", nullable = false)
+    @JsonBackReference
     private Campaign campaign;
 
     @Column(name = "target_group_index")

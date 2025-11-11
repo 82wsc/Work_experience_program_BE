@@ -54,7 +54,7 @@ public class CampaignController {
 
     @PutMapping("/{campaign_id}/selection")
     public ResponseEntity<Void> selectMessage(@PathVariable("campaign_id") UUID campaignId, @RequestBody MessageSelectionDto selectionDto) {
-        campaignService.selectMessage(campaignId, selectionDto.getResultId());
+        campaignService.selectMessage(campaignId, selectionDto.getResultIds());
         return ResponseEntity.ok().build();
     }
 

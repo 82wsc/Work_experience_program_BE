@@ -8,6 +8,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import reactor.core.publisher.Mono;
+
 import java.util.List;
 
 @RestController
@@ -23,9 +25,9 @@ public class DashboardController {
 
     // 대시보드 요약 조회
     @GetMapping("/summary")
-    public ResponseEntity<DashboardSummaryDto> getDashboardSummary() {
-        DashboardSummaryDto summary = dashboardService.getDashboardSummary();
-        return ResponseEntity.ok(summary);
+    public Mono<ResponseEntity<DashboardSummaryDto>> getDashboardSummary() {
+        return dashboardService.getDashboardSummary()
+                .map(ResponseEntity::ok);
     }
 
     // 최근 활동 조회
