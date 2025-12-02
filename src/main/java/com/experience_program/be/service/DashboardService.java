@@ -9,14 +9,16 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
-import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 @Service
 public class DashboardService {
 
     private final CampaignRepository campaignRepository;
-    private final WebClient webClient; // WebClient 주입
+    private final WebClient webClient;
 
     @Autowired
     public DashboardService(CampaignRepository campaignRepository, WebClient webClient) {
@@ -25,20 +27,45 @@ public class DashboardService {
     }
 
     public Mono<DashboardSummaryDto> getDashboardSummary() {
-        List<String> ongoingStatuses = Arrays.asList("PROCESSING", "REFINING", "MESSAGE_SELECTED");
-        long ongoingCampaigns = campaignRepository.countByStatusIn(ongoingStatuses);
-        long successCases = campaignRepository.countByIsSuccessCase(true);
+        List<Object[]> results = campaignRepository.countCampaignsByStatus();
 
-        // AI 서버의 /api/knowledge/count 엔드포인트를 호출하여 총 지식 개수를 가져옵니다.
+        Map<String, Long> rawCounts = results.stream()
+                .collect(Collectors.toMap(
+                        row -> (String) row[0],
+                        row -> (Long) row[1]
+                ));
+
+        Map<String, Long> finalStatusCounts = new HashMap<>();
+
+        // 1. CREATING (생성중)
+        long creatingCount = rawCounts.getOrDefault("PROCESSING", 0L) + rawCounts.getOrDefault("REFINING", 0L);
+        finalStatusCounts.put("CREATING", creatingCount);
+
+        // 2. ONGOING (진행중)
+        long ongoingCount = rawCounts.getOrDefault("COMPLETED", 0L) + rawCounts.getOrDefault("MESSAGE_SELECTED", 0L);
+        finalStatusCounts.put("ONGOING", ongoingCount);
+
+        // 3. CASE_REGISTERED (사례 등록)
+        long caseRegisteredCount = rawCounts.getOrDefault("PERFORMANCE_REGISTERED", 0L) + rawCounts.getOrDefault("SUCCESS_CASE", 0L);
+        finalStatusCounts.put("CASE_REGISTERED", caseRegisteredCount);
+
+        // 4. DB_REGISTERED (DB 등록)
+        long dbRegisteredCount = rawCounts.getOrDefault("RAG_REGISTERED", 0L);
+        finalStatusCounts.put("DB_REGISTERED", dbRegisteredCount);
+
+        // 전체 캠페인 수 계산 (FAILED 제외)
+        long totalCampaigns = creatingCount + ongoingCount + caseRegisteredCount + dbRegisteredCount;
+
+        // AI 서버에서 totalKnowledge 개수 가져오기
         return webClient.get()
                 .uri("/api/knowledge/count")
                 .retrieve()
                 .bodyToMono(CountDto.class)
-                .map(countDto -> new DashboardSummaryDto(ongoingCampaigns, successCases, countDto.getCount()))
-                .defaultIfEmpty(new DashboardSummaryDto(ongoingCampaigns, successCases, 0L)) // AI 서버 응답이 없으면 0으로 처리
+                .map(countDto -> new DashboardSummaryDto(totalCampaigns, finalStatusCounts, countDto.getCount()))
+                .defaultIfEmpty(new DashboardSummaryDto(totalCampaigns, finalStatusCounts, 0L))
                 .onErrorResume(e -> {
                     System.err.println("Error fetching knowledge count from AI server: " + e.getMessage());
-                    return Mono.just(new DashboardSummaryDto(ongoingCampaigns, successCases, 0L)); // 오류 발생 시 0으로 처리
+                    return Mono.just(new DashboardSummaryDto(totalCampaigns, finalStatusCounts, 0L));
                 });
     }
 
