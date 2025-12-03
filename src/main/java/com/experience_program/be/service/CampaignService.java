@@ -4,24 +4,32 @@ import com.experience_program.be.controller.CampaignSpecification;
 import com.experience_program.be.dto.*;
 import com.experience_program.be.entity.Campaign;
 import com.experience_program.be.entity.MessageResult;
+import com.experience_program.be.entity.PerformanceStatus;
 import com.experience_program.be.repository.CampaignRepository;
 import com.experience_program.be.repository.MessageResultRepository;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
+import java.io.IOException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 @Service
 public class CampaignService {
@@ -29,25 +37,30 @@ public class CampaignService {
     private final CampaignRepository campaignRepository;
     private final MessageResultRepository messageResultRepository;
     private final WebClient webClient;
+    private final ObjectMapper objectMapper;
 
     @Autowired
-    public CampaignService(CampaignRepository campaignRepository, MessageResultRepository messageResultRepository, WebClient webClient) {
+    public CampaignService(CampaignRepository campaignRepository, MessageResultRepository messageResultRepository, WebClient webClient, ObjectMapper objectMapper) {
         this.campaignRepository = campaignRepository;
         this.messageResultRepository = messageResultRepository;
         this.webClient = webClient;
+        this.objectMapper = objectMapper;
     }
 
     @Transactional
     public Campaign createCampaign(CampaignRequestDto campaignRequestDto) {
+        String sourceUrlsJson = convertObjectToJson(campaignRequestDto.getSourceUrls());
+        String customColumnsJson = convertObjectToJson(campaignRequestDto.getCustomColumns());
+
         Campaign campaign = Campaign.builder()
                 .marketerId(campaignRequestDto.getMarketerId())
                 .purpose(campaignRequestDto.getPurpose())
                 .coreBenefitText(campaignRequestDto.getCoreBenefitText())
-                .sourceUrl(campaignRequestDto.getSourceUrl())
-                .customColumns(campaignRequestDto.getCustomColumns())
+                .sourceUrl(sourceUrlsJson)
+                .customColumns(customColumnsJson)
                 .status("PROCESSING")
                 .requestDate(LocalDateTime.now())
-                .isSuccessCase(false)
+                .performanceStatus(PerformanceStatus.UNDECIDED)
                 .isPerformanceRegistered(false)
                 .isRagRegistered(false)
                 .build();
@@ -71,16 +84,20 @@ public class CampaignService {
     public void saveAiResponse(Campaign campaign, AiResponseDto aiResponse) {
         List<MessageResult> messageResults = aiResponse.getTarget_groups().stream()
                 .flatMap(targetGroupDto -> targetGroupDto.getMessage_drafts().stream()
-                        .map(messageDraftDto -> MessageResult.builder()
-                                .campaign(campaign)
-                                .targetGroupIndex(targetGroupDto.getTarget_group_index())
-                                .targetName(targetGroupDto.getTarget_name())
-                                .targetFeatures(targetGroupDto.getTarget_features())
-                                .messageDraftIndex(messageDraftDto.getMessage_draft_index())
-                                .messageText(messageDraftDto.getMessage_text())
-                                .validatorReport(messageDraftDto.getValidator_report())
-                                .isSelected(false)
-                                .build()))
+                        .map(messageDraftDto -> {
+                            String validationReportJson = convertObjectToJson(messageDraftDto.getValidationReport());
+                            return MessageResult.builder()
+                                    .campaign(campaign)
+                                    .targetGroupIndex(targetGroupDto.getTarget_group_index())
+                                    .targetName(targetGroupDto.getTarget_name())
+                                    .targetFeatures(targetGroupDto.getTarget_features())
+                                    .classificationReason(targetGroupDto.getClassification_reason())
+                                    .messageDraftIndex(messageDraftDto.getMessageDraftIndex())
+                                    .messageText(messageDraftDto.getMessageText())
+                                    .validatorReport(validationReportJson)
+                                    .isSelected(false)
+                                    .build();
+                        }))
                 .collect(Collectors.toList());
         messageResultRepository.saveAll(messageResults);
     }
@@ -97,14 +114,10 @@ public class CampaignService {
 
     @Transactional
     public void selectMessage(UUID campaignId, List<UUID> resultIds) {
-        // 1. Verify campaign exists
         Campaign campaign = getCampaignById(campaignId);
-
-        // 2. Reset all messages for this campaign to isSelected = false
         List<MessageResult> allResults = messageResultRepository.findByCampaign_CampaignId(campaignId);
         allResults.forEach(result -> result.setSelected(false));
 
-        // 3. Set isSelected = true for the provided resultIds
         List<MessageResult> selectedResults = messageResultRepository.findAllById(resultIds);
         for (MessageResult result : selectedResults) {
             if (!result.getCampaign().getCampaignId().equals(campaignId)) {
@@ -115,8 +128,6 @@ public class CampaignService {
         
         messageResultRepository.saveAll(allResults);
         messageResultRepository.saveAll(selectedResults);
-
-        // 4. Update campaign status
         updateCampaignStatus(campaignId, "MESSAGE_SELECTED");
     }
 
@@ -125,15 +136,13 @@ public class CampaignService {
         Campaign campaign = getCampaignById(campaignId);
         updateCampaignStatus(campaignId, "REFINING");
 
-        // 1. Reconstruct campaign_context
         CampaignRequestDto campaignContext = new CampaignRequestDto();
         campaignContext.setMarketerId(campaign.getMarketerId());
         campaignContext.setPurpose(campaign.getPurpose());
         campaignContext.setCoreBenefitText(campaign.getCoreBenefitText());
-        campaignContext.setSourceUrl(campaign.getSourceUrl());
-        campaignContext.setCustomColumns(campaign.getCustomColumns());
+        campaignContext.setSourceUrls(convertJsonToList(campaign.getSourceUrl()));
+        campaignContext.setCustomColumns(convertJsonToMap(campaign.getCustomColumns()));
 
-        // 2. Reconstruct target_personas from previous results
         List<MessageResult> previousResults = messageResultRepository.findByCampaign_CampaignId(campaignId);
         List<Map<String, Object>> targetPersonas = previousResults.stream()
                 .map(result -> {
@@ -143,14 +152,13 @@ public class CampaignService {
                     persona.put("target_features", result.getTargetFeatures());
                     return persona;
                 })
-                .distinct() // 중복된 페르소나 정보 제거
+                .distinct()
                 .collect(Collectors.toList());
 
-        // 3. Assemble the final request body for AI server
         Map<String, Object> requestBody = new HashMap<>();
         requestBody.put("campaign_context", campaignContext);
         requestBody.put("feedback_text", feedback);
-        requestBody.put("target_personas", targetPersonas); // 페르소나 정보 추가
+        requestBody.put("target_personas", targetPersonas);
 
         webClient.post()
                 .uri("/api/campaigns/" + campaignId + "/refine")
@@ -182,14 +190,19 @@ public class CampaignService {
         Campaign campaign = getCampaignById(campaignId);
         campaign.setActualCtr(performanceDto.getActualCtr());
         campaign.setConversionRate(performanceDto.getConversionRate());
-        campaign.setSuccessCase(performanceDto.getIsSuccessCase());
+        campaign.setPerformanceStatus(performanceDto.getPerformanceStatus());
+        campaign.setPerformanceNotes(performanceDto.getPerformanceNotes());
         campaign.setPerformanceRegistered(true);
 
-        // status 업데이트 로직 추가
-        if (performanceDto.getIsSuccessCase()) {
-            campaign.setStatus("SUCCESS_CASE");
-        } else {
-            campaign.setStatus("PERFORMANCE_REGISTERED");
+        switch (performanceDto.getPerformanceStatus()) {
+            case SUCCESS:
+                campaign.setStatus("SUCCESS_CASE");
+                break;
+            case FAILURE:
+            case UNDECIDED:
+            default:
+                campaign.setStatus("PERFORMANCE_REGISTERED");
+                break;
         }
         
         campaignRepository.save(campaign);
@@ -202,6 +215,9 @@ public class CampaignService {
         if (!campaign.isPerformanceRegistered()) {
             throw new IllegalStateException("성과가 등록되지 않은 캠페인은 RAG DB에 등록할 수 없습니다.");
         }
+        if (campaign.getPerformanceStatus() == PerformanceStatus.UNDECIDED) {
+            throw new IllegalStateException("'미정' 상태의 캠페인은 RAG DB에 등록할 수 없습니다.");
+        }
 
         List<MessageResult> selectedMessages = messageResultRepository.findByCampaign_CampaignIdAndIsSelected(campaign.getCampaignId(), true);
         if (selectedMessages.isEmpty()) {
@@ -209,21 +225,28 @@ public class CampaignService {
         }
 
         String title;
-        String sourceType = campaign.isSuccessCase() ? "성공_사례" : "실패_사례";
+        String sourceType = (campaign.getPerformanceStatus() == PerformanceStatus.SUCCESS) ? "성공_사례" : "실패_사례";
         title = sourceType.replace("_", " ") + ": " + campaign.getPurpose();
 
-        // 선택된 모든 메시지를 타겟 그룹 정보와 함께 명확하게 구분하여 조합
-        String combinedMessages = selectedMessages.stream()
-                .map(msg -> String.format("타겟: %s\n메시지: %s", msg.getTargetName(), msg.getMessageText()))
+        String combinedMessages = IntStream.range(0, selectedMessages.size())
+                .mapToObj(i -> String.format("[메시지 %d] 타겟: %s\n내용: %s",
+                        i + 1,
+                        selectedMessages.get(i).getTargetName(),
+                        selectedMessages.get(i).getMessageText()))
                 .collect(Collectors.joining("\n\n---\n\n"));
 
+        String performanceSection = String.format("--- 성과 ---\nCTR: %s\n전환율: %s",
+                campaign.getActualCtr(), campaign.getConversionRate());
+        if (StringUtils.hasText(campaign.getPerformanceNotes())) {
+            performanceSection += "\n\n--- 성과 분석 ---\n" + campaign.getPerformanceNotes();
+        }
+
         String content = String.format(
-                "캠페인 목적: %s\n핵심 혜택: %s\n\n--- 메시지 목록 ---\n\n%s\n\n--- 성과 ---\nCTR: %s\n전환율: %s",
+                "캠페인 목적: %s\n핵심 혜택: %s\n\n--- 참고 메시지 ---\n\n%s\n\n%s",
                 campaign.getPurpose(),
                 campaign.getCoreBenefitText(),
                 combinedMessages,
-                campaign.getActualCtr(),
-                campaign.getConversionRate()
+                performanceSection
         );
 
         SuccessCaseDto successCaseDto = new SuccessCaseDto(
@@ -252,5 +275,39 @@ public class CampaignService {
         Campaign campaign = getCampaignById(campaignId);
         campaign.setStatus(newStatus);
         campaignRepository.save(campaign);
+    }
+
+    // Helper methods for JSON conversion
+    private String convertObjectToJson(Object object) {
+        if (object == null) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(object);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException("객체를 JSON으로 변환하는 데 실패했습니다.", e);
+        }
+    }
+
+    private List<String> convertJsonToList(String json) {
+        if (!StringUtils.hasText(json)) {
+            return Collections.emptyList();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<List<String>>() {});
+        } catch (IOException e) {
+            throw new RuntimeException("JSON을 리스트로 변환하는 데 실패했습니다.", e);
+        }
+    }
+
+    private Map<String, Object> convertJsonToMap(String json) {
+        if (!StringUtils.hasText(json)) {
+            return Collections.emptyMap();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+        } catch (IOException e) {
+            throw new RuntimeException("JSON을 맵으로 변환하는 데 실패했습니다.", e);
+        }
     }
 }

@@ -5,6 +5,9 @@ import jakarta.validation.constraints.Size;
 import lombok.Getter;
 import lombok.Setter;
 
+import java.util.List;
+import java.util.Map;
+
 @Getter
 @Setter
 public class CampaignRequestDto {
@@ -19,7 +22,7 @@ public class CampaignRequestDto {
     @NotBlank(message = "핵심 혜택 내용은 필수 입력 값입니다.")
     private String coreBenefitText;
 
-    private String sourceUrl;
+    private List<String> sourceUrls;
 
-    private String customColumns; // JSON string
+    private Map<String, Object> customColumns;
 }

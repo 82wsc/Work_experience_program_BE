@@ -4,6 +4,7 @@ import com.experience_program.be.dto.AiKnowledgeDto;
 import com.experience_program.be.dto.KnowledgeRequestDto;
 import com.experience_program.be.dto.KnowledgeUpdateDto;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
@@ -13,6 +14,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 public class KnowledgeService {
@@ -25,11 +27,9 @@ public class KnowledgeService {
     }
 
     public void registerKnowledge(KnowledgeRequestDto requestDto) {
-        // 서버에서 고유 ID와 현재 시간을 생성
         String newCampaignId = "knowledge-" + UUID.randomUUID().toString();
         LocalDateTime registrationDateTime = LocalDateTime.now();
 
-        // AI 서버로 보낼 전용 DTO를 생성합니다.
         AiKnowledgeDto knowledgeData = new AiKnowledgeDto(
                 newCampaignId,
                 requestDto.getCampaignSummary(),
@@ -43,15 +43,26 @@ public class KnowledgeService {
                 .retrieve()
                 .bodyToMono(Void.class)
                 .doOnError(error -> {
-                    // 에러 로깅 (실제 프로덕션에서는 더 정교한 로깅 필요)
                     System.err.println("Error while registering knowledge: " + error.getMessage());
                 })
                 .subscribe();
     }
 
-    public Mono<Object> getAllKnowledge() {
+    public Mono<Object> getAllKnowledge(Pageable pageable) {
         return webClient.get()
-                .uri("/api/knowledge")
+                .uri(uriBuilder -> {
+                    uriBuilder.path("/api/knowledge")
+                            .queryParam("page", pageable.getPageNumber())
+                            .queryParam("size", pageable.getPageSize());
+
+                    if (pageable.getSort().isSorted()) {
+                        String sortString = pageable.getSort().stream()
+                                .map(order -> order.getProperty() + "," + order.getDirection().name().toLowerCase())
+                                .collect(Collectors.joining());
+                        uriBuilder.queryParam("sort", sortString);
+                    }
+                    return uriBuilder.build();
+                })
                 .retrieve()
                 .bodyToMono(Object.class);
     }
@@ -64,11 +75,10 @@ public class KnowledgeService {
     }
 
     public void updateKnowledge(String knowledgeId, KnowledgeUpdateDto requestDto) {
-        // AI 서버의 명세에 맞는 중첩된 Map 구조를 생성합니다.
         Map<String, Object> metadata = new HashMap<>(requestDto.getCampaignDetails());
         metadata.put("campaign_id", knowledgeId);
-        metadata.put("status", "successful"); // 또는 다른 적절한 상태값
-        metadata.put("registration_date", LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
+        metadata.put("status", "successful");
+        metadata.put("updated_at", LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
 
         Map<String, Object> requestBody = new HashMap<>();
         requestBody.put("document", requestDto.getCampaignSummary());
@@ -80,7 +90,6 @@ public class KnowledgeService {
                 .retrieve()
                 .bodyToMono(Void.class)
                 .doOnError(error -> {
-                    // 에러 로깅
                     System.err.println("Error while updating knowledge: " + error.getMessage());
                 })
                 .subscribe();
@@ -92,7 +101,6 @@ public class KnowledgeService {
                 .retrieve()
                 .bodyToMono(Void.class)
                 .doOnError(error -> {
-                    // 에러 로깅
                     System.err.println("Error while deleting knowledge: " + error.getMessage());
                 })
                 .subscribe();

@@ -4,6 +4,7 @@ import com.experience_program.be.dto.KnowledgeRequestDto;
 import com.experience_program.be.dto.KnowledgeUpdateDto;
 import com.experience_program.be.service.KnowledgeService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -27,8 +28,8 @@ public class KnowledgeController {
     }
 
     @GetMapping
-    public Mono<ResponseEntity<Object>> getAllKnowledge() {
-        return knowledgeService.getAllKnowledge()
+    public Mono<ResponseEntity<Object>> getAllKnowledge(Pageable pageable) {
+        return knowledgeService.getAllKnowledge(pageable)
                 .map(ResponseEntity::ok);
     }
 

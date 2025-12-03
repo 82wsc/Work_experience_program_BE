@@ -1,6 +1,7 @@
 package com.experience_program.be.entity;
 
 import com.fasterxml.jackson.annotation.JsonBackReference;
+import com.fasterxml.jackson.annotation.JsonRawValue;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -35,6 +36,10 @@ public class MessageResult {
     @Column(name = "target_features", columnDefinition = "TEXT")
     private String targetFeatures;
 
+    @Lob
+    @Column(name = "classification_reason", columnDefinition = "TEXT")
+    private String classificationReason;
+
     @Column(name = "message_draft_index")
     private int messageDraftIndex;
 
@@ -44,6 +49,7 @@ public class MessageResult {
 
     @Lob
     @Column(name = "validator_report", columnDefinition = "TEXT")
+    @JsonRawValue
     private String validatorReport;
 
     @Column(name = "is_selected")

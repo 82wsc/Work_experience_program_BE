@@ -1,5 +1,6 @@
 package com.experience_program.be.dto;
 
+import com.experience_program.be.entity.PerformanceStatus;
 import lombok.Getter;
 import lombok.Setter;
 
@@ -10,5 +11,6 @@ import java.math.BigDecimal;
 public class CampaignPerformanceUpdateDto {
     private BigDecimal actualCtr;
     private BigDecimal conversionRate;
-    private Boolean isSuccessCase;
+    private PerformanceStatus performanceStatus;
+    private String performanceNotes;
 }
